@@ -1,0 +1,64 @@
+# --- Toolchain / editor ---
+.vscode/
+.idea/
+*.swp
+*.log
+
+# --- Oggetti e build ---
+**/build/
+**/obj/
+**/out/
+**/*.o
+**/*.a
+**/*.d
+**/*.so
+**/*.core
+
+# --- Kernel compile dirs (OS/161) ---
+kern/compile*/
+kern/*/compile*/
+# Es. ASSTx o custom: ignora tutto tranne i sorgenti
+kern/compile*/**/*
+!kern/compile*/Makefile*
+
+# --- Install tree di OS/161 (root) ---
+root/bin/
+root/sbin/
+root/testbin/
+root/hostbin/
+root/kern/
+root/lib/
+root/man/
+root/share/
+root/include/
+root/lost+found/
+root/tmp/
+root/dev/*
+sys161.conf
+# Immagini dischi / emulatori
+*.img
+*LHD*.img
+emu0
+emu1
+emu*
+trace.log
+
+# --- Userland build artefacts ---
+userland/**/build/
+userland/**/mips/
+userland/**/x86/
+userland/**/arm/
+userland/*/obj/
+userland/*/*/obj/
+
+# --- Autotools/CMake (se usati) ---
+CMakeCache.txt
+CMakeFiles/
+cmake-build*/
+Makefile
+configure
+config.log
+config.status
+
+# --- Varie ---
+.DS_Store
