@@ -31,7 +31,7 @@ options semfs			# Semaphores for userland
 options sfs			# Always use the file system
 #options netfs			# You might write this as a project.
 
-options dumbvm			# Chewing gum and baling wire.
+#options dumbvm			# Chewing gum and baling wire.
 
 options hello
 
@@ -43,4 +43,4 @@ options waitpid
 
 options fork
 
-#options paging
+options paging

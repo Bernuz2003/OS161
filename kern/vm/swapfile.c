@@ -1,4 +1,5 @@
 #include <types.h>
+#include <kern/errno.h> 
 #include "opt-paging.h"
 #if OPT_PAGING
 #include <swapfile.h>

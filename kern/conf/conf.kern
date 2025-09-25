@@ -462,3 +462,4 @@ optfile   paging   vm/segments.c
 optfile   paging   vm/vm_tlb.c
 optfile   paging   vm/vmstats.c
 optfile   paging   vm/swapfile.c
+optfile   paging   vm/vm.c

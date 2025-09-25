@@ -44,6 +44,9 @@
 #if OPT_PAGING
 #include <mips/tlb.h>
 #include <spl.h>
+#include <segments.h>
+#include <vnode.h>
+#include <machine/vm.h>
 #endif
 
 struct addrspace *
@@ -94,10 +97,18 @@ int as_copy(struct addrspace *old, struct addrspace **ret)
 void as_destroy(struct addrspace *as)
 {
 #if OPT_PAGING
-	/* M0: rilascia solo contenitori base (M1 libererà segmenti/PT) */
-	/* TODO M1: free lista segmenti, PT 2-livelli, vnodes, ecc. */
+    /* libera lista segmenti (DECREF su vnodes se presenti) */
+    struct vm_segment *s = as->segs;
+    while (s) {
+        struct vm_segment *nxt = s->next;
+        if (s->vn) VOP_DECREF(s->vn);
+        kfree(s);
+        s = nxt;
+    }
+    as->segs = NULL;
+    /* TODO: liberare PT 2-livelli quando li allochiamo in M1 step B */
 #endif
-	kfree(as);
+    kfree(as);
 }
 
 void as_activate(void)
@@ -140,26 +151,15 @@ void as_deactivate(void)
  * want to implement them.
  */
 int as_define_region(struct addrspace *as, vaddr_t vaddr, size_t memsize,
-					 int readable, int writeable, int executable)
+                     int readable, int writeable, int executable)
 {
 #if OPT_PAGING
-	/* M0: registrazione “minima” rinviata a M1 (lazy) */
-	(void)as;
-	(void)vaddr;
-	(void)memsize;
-	(void)readable;
-	(void)writeable;
-	(void)executable;
-	return 0;
+    /* Helper generico: definisce regione ZERO-backed con i permessi richiesti */
+    return seg_add_zero(as, vaddr, memsize, readable, writeable, executable);
 #else
-	/* Con DUMBVM attivo, usa la versione in dumbvm.c (non viene linkata qui) */
-	(void)as;
-	(void)vaddr;
-	(void)memsize;
-	(void)readable;
-	(void)writeable;
-	(void)executable;
-	return 0;
+    (void)as; (void)vaddr; (void)memsize;
+    (void)readable; (void)writeable; (void)executable;
+    return 0;
 #endif
 }
 
@@ -186,13 +186,15 @@ int as_complete_load(struct addrspace *as)
 int as_define_stack(struct addrspace *as, vaddr_t *stackptr)
 {
 #if OPT_PAGING
-	/* M0: impostiamo soltanto lo stack pointer iniziale */
-	(void)as;
-	*stackptr = USERSTACK;
-	return 0;
+    /* compat con dumbvm: 18 pagine di stack “garantite” come limite minimo */
+    const size_t DFLT_STACKPAGES = 18;
+    as->stack_top   = USERSTACK;
+    as->stack_limit = USERSTACK - DFLT_STACKPAGES * PAGE_SIZE; /* guard verso il basso */
+    *stackptr = USERSTACK;
+    return 0;
 #else
-	(void)as;
-	*stackptr = USERSTACK;
-	return 0;
+    (void)as;
+    *stackptr = USERSTACK;
+    return 0;
 #endif
 }

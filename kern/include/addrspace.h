@@ -48,41 +48,32 @@ struct vnode;
  */
 
 #if OPT_PAGING
+
 struct vm_segment
 {
-        vaddr_t vbase;    /* allineato a pagina */
-        size_t npages;    /* numero di pagine */
-        int perm_r;       /* 1 se leggibile */
-        int perm_w;       /* 1 se scrivibile */
-        int perm_x;       /* 1 se eseguibile */
-        int backing;      /* 0=ZERO, 1=FILE */
+        vaddr_t vbase;
+        size_t npages;
+        int perm_r, perm_w, perm_x;
+        int backing;      /* SEG_BACK_ZERO / SEG_BACK_FILE */
         struct vnode *vn; /* se FILE-backed */
-        off_t file_off;   /* offset in file del segmento */
-        size_t file_len;  /* lunghezza su file */
-        /* link: potremo usare una lista dinamica in M1 */
+        off_t file_off;   /* offset in file allineato a pagina */
+        size_t file_len;  /* lunghezza su file (può essere < npages*PAGE_SIZE) */
         struct vm_segment *next;
 };
 
 struct addrspace
 {
-        /* Segmenti utente (lista) */
-        struct vm_segment *segs;
-
-        /* Heap & Stack boundaries */
-        vaddr_t heap_base;
-        vaddr_t heap_end;
-        vaddr_t stack_top;   /* tipicamente USERSTACK */
-        vaddr_t stack_limit; /* limite inferiore, con guard page */
-
-        /* Page table 2 livelli (M1 la popolerà) */
-        void **pt_l1;           /* page directory (array di puntatori a L2) */
-        unsigned pt_l1_entries; /* dimensione directory (dipende da MIPS) */
+        struct vm_segment *segs; /* lista segmenti */
+        vaddr_t heap_base, heap_end;
+        vaddr_t stack_top, stack_limit;
+        void **pt_l1;
+        unsigned pt_l1_entries;
 };
-#endif /* OPT_PAGING */
+
+#elif OPT_DUMBVM
 
 struct addrspace
 {
-#if OPT_DUMBVM
         vaddr_t as_vbase1;
         paddr_t as_pbase1;
         size_t as_npages1;
@@ -90,10 +81,17 @@ struct addrspace
         paddr_t as_pbase2;
         size_t as_npages2;
         paddr_t as_stackpbase;
-#else
-        /* Put stuff here for your VM system */
-#endif
 };
+
+#else
+
+/* fallback (non usato) */
+struct addrspace
+{
+        int _unused;
+};
+
+#endif
 
 /*
  * Functions in addrspace.c:
@@ -136,20 +134,20 @@ struct addrspace
  * functions are found in dumbvm.c.
  */
 
-struct addrspace  *as_create(void);
-int               as_copy(struct addrspace *src, struct addrspace **ret);
-void              as_activate(void);
-void              as_deactivate(void);
-void              as_destroy(struct addrspace *);
+struct addrspace *as_create(void);
+int as_copy(struct addrspace *src, struct addrspace **ret);
+void as_activate(void);
+void as_deactivate(void);
+void as_destroy(struct addrspace *);
 
-int               as_define_region(struct addrspace *as,
-                                  vaddr_t vaddr, size_t sz,
-                                  int readable,
-                                  int writeable,
-                                  int executable);
-int               as_prepare_load(struct addrspace *as);
-int               as_complete_load(struct addrspace *as);
-int               as_define_stack(struct addrspace *as, vaddr_t *initstackptr);
+int as_define_region(struct addrspace *as,
+                     vaddr_t vaddr, size_t sz,
+                     int readable,
+                     int writeable,
+                     int executable);
+int as_prepare_load(struct addrspace *as);
+int as_complete_load(struct addrspace *as);
+int as_define_stack(struct addrspace *as, vaddr_t *initstackptr);
 
 /*
  * Functions in loadelf.c
@@ -158,6 +156,6 @@ int               as_define_stack(struct addrspace *as, vaddr_t *initstackptr);
  *               in the space pointed to by ENTRYPOINT.
  */
 
-int               load_elf(struct vnode *v, vaddr_t *entrypoint);
+int load_elf(struct vnode *v, vaddr_t *entrypoint);
 
 #endif /* _ADDRSPACE_H_ */
