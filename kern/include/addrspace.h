@@ -39,6 +39,7 @@
 #include "opt-paging.h"
 
 struct vnode;
+struct lock;
 
 /*
  * Address space - data structure associated with the virtual memory
@@ -48,26 +49,30 @@ struct vnode;
  */
 
 #if OPT_PAGING
-
 struct vm_segment
 {
         vaddr_t vbase;
         size_t npages;
         int perm_r, perm_w, perm_x;
-        int backing;      /* SEG_BACK_ZERO / SEG_BACK_FILE */
-        struct vnode *vn; /* se FILE-backed */
-        off_t file_off;   /* offset in file allineato a pagina */
-        size_t file_len;  /* lunghezza su file (può essere < npages*PAGE_SIZE) */
+        int backing; /* SEG_BACK_ZERO / SEG_BACK_FILE */
+        struct vnode *vn;
+        off_t file_off;
+        size_t file_len;
         struct vm_segment *next;
 };
 
 struct addrspace
 {
-        struct vm_segment *segs; /* lista segmenti */
+        struct vm_segment *segs;
         vaddr_t heap_base, heap_end;
         vaddr_t stack_top, stack_limit;
+
+        /* Page table 2 livelli */
         void **pt_l1;
         unsigned pt_l1_entries;
+
+        /* lock per proteggere PT L1/L2 */
+        struct lock *pt_lock;
 };
 
 #elif OPT_DUMBVM

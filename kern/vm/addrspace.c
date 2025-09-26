@@ -47,29 +47,29 @@
 #include <segments.h>
 #include <vnode.h>
 #include <machine/vm.h>
+#include <synch.h>
+#include <pt.h>
 #endif
 
-struct addrspace *
-as_create(void)
+struct addrspace *as_create(void)
 {
-	struct addrspace *as;
-
-	as = kmalloc(sizeof(struct addrspace));
-	if (as == NULL)
-	{
+	struct addrspace *as = kmalloc(sizeof(struct addrspace));
+	if (!as)
 		return NULL;
-	}
 
 #if OPT_PAGING
-
 	as->segs = NULL;
 	as->heap_base = as->heap_end = 0;
 	as->stack_top = USERSTACK;
 	as->stack_limit = 0;
 	as->pt_l1 = NULL;
 	as->pt_l1_entries = 0;
-#else
-	/* DUMBVM: lasciamo invariato (il file originale già lo gestisce) */
+	as->pt_lock = lock_create("aspt");
+	if (!as->pt_lock)
+	{
+		kfree(as);
+		return NULL;
+	}
 #endif
 	return as;
 }
@@ -97,18 +97,29 @@ int as_copy(struct addrspace *old, struct addrspace **ret)
 void as_destroy(struct addrspace *as)
 {
 #if OPT_PAGING
-    /* libera lista segmenti (DECREF su vnodes se presenti) */
-    struct vm_segment *s = as->segs;
-    while (s) {
-        struct vm_segment *nxt = s->next;
-        if (s->vn) VOP_DECREF(s->vn);
-        kfree(s);
-        s = nxt;
-    }
-    as->segs = NULL;
-    /* TODO: liberare PT 2-livelli quando li allochiamo in M1 step B */
+	/* libera lista segmenti */
+	struct vm_segment *s = as->segs;
+	while (s)
+	{
+		struct vm_segment *n = s->next;
+		if (s->vn)
+			VOP_DECREF(s->vn);
+		kfree(s);
+		s = n;
+	}
+	as->segs = NULL;
+
+	/* libera PT 2-livelli se presente */
+	pt_destroy(as);
+
+	/* distruggi lock */
+	if (as->pt_lock)
+	{
+		lock_destroy(as->pt_lock);
+		as->pt_lock = NULL;
+	}
 #endif
-    kfree(as);
+	kfree(as);
 }
 
 void as_activate(void)
@@ -151,15 +162,19 @@ void as_deactivate(void)
  * want to implement them.
  */
 int as_define_region(struct addrspace *as, vaddr_t vaddr, size_t memsize,
-                     int readable, int writeable, int executable)
+					 int readable, int writeable, int executable)
 {
 #if OPT_PAGING
-    /* Helper generico: definisce regione ZERO-backed con i permessi richiesti */
-    return seg_add_zero(as, vaddr, memsize, readable, writeable, executable);
+	/* Helper generico: definisce regione ZERO-backed con i permessi richiesti */
+	return seg_add_zero(as, vaddr, memsize, readable, writeable, executable);
 #else
-    (void)as; (void)vaddr; (void)memsize;
-    (void)readable; (void)writeable; (void)executable;
-    return 0;
+	(void)as;
+	(void)vaddr;
+	(void)memsize;
+	(void)readable;
+	(void)writeable;
+	(void)executable;
+	return 0;
 #endif
 }
 
@@ -186,15 +201,15 @@ int as_complete_load(struct addrspace *as)
 int as_define_stack(struct addrspace *as, vaddr_t *stackptr)
 {
 #if OPT_PAGING
-    /* compat con dumbvm: 18 pagine di stack “garantite” come limite minimo */
-    const size_t DFLT_STACKPAGES = 18;
-    as->stack_top   = USERSTACK;
-    as->stack_limit = USERSTACK - DFLT_STACKPAGES * PAGE_SIZE; /* guard verso il basso */
-    *stackptr = USERSTACK;
-    return 0;
+	/* compat con dumbvm: 18 pagine di stack “garantite” come limite minimo */
+	const size_t DFLT_STACKPAGES = 18;
+	as->stack_top = USERSTACK;
+	as->stack_limit = USERSTACK - DFLT_STACKPAGES * PAGE_SIZE; /* guard verso il basso */
+	*stackptr = USERSTACK;
+	return 0;
 #else
-    (void)as;
-    *stackptr = USERSTACK;
-    return 0;
+	(void)as;
+	*stackptr = USERSTACK;
+	return 0;
 #endif
 }
