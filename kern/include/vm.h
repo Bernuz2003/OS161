@@ -36,14 +36,20 @@
  * You'll probably want to add stuff here.
  */
 
-
 #include <machine/vm.h>
 
-/* Fault-type arguments to vm_fault() */
-#define VM_FAULT_READ        0    /* A read was attempted */
-#define VM_FAULT_WRITE       1    /* A write was attempted */
-#define VM_FAULT_READONLY    2    /* A write to a readonly page was attempted*/
+#ifndef KVADDR_TO_PADDR
+#define KVADDR_TO_PADDR(kv) ((paddr_t)((kv) - MIPS_KSEG0))
+#endif
 
+#ifndef PADDR_TO_KVADDR
+#define PADDR_TO_KVADDR(pa) ((vaddr_t)((pa) + MIPS_KSEG0))
+#endif
+
+/* Fault-type arguments to vm_fault() */
+#define VM_FAULT_READ 0     /* A read was attempted */
+#define VM_FAULT_WRITE 1    /* A write was attempted */
+#define VM_FAULT_READONLY 2 /* A write to a readonly page was attempted*/
 
 /* Initialization function */
 void vm_bootstrap(void);
@@ -57,6 +63,5 @@ void free_kpages(vaddr_t addr);
 
 /* TLB shootdown handling called from interprocessor_interrupt */
 void vm_tlbshootdown(const struct tlbshootdown *);
-
 
 #endif /* _VM_H_ */

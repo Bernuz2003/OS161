@@ -3,16 +3,18 @@
 
 #include "opt-paging.h"
 #if OPT_PAGING
+
 #include <types.h>
 
-struct coremap_entry {
-    /* M1/M2: owner as*, vaddr, state, flags, ecc. */
-    uint8_t state; /* 0=FREE, 1=USED, future: 2=PINNED... */
-};
+/* Inizializzazione e stato */
+void coremap_bootstrap(void);
+int coremap_is_ready(void);
 
-void coremap_bootstrap(void);      /* chiamata da vm_bootstrap */
-paddr_t coremap_alloc_page(void);  /* M1: ritorna paddr o 0 */
-void   coremap_free_page(paddr_t pa);
+/* Allocazione / liberazione di frame fisici (contigui) */
+paddr_t coremap_alloc_page(void);
+paddr_t coremap_alloc_npages(unsigned long npages);
+void coremap_free_page(paddr_t pa);
+void coremap_free_npages(paddr_t pa, unsigned long npages);
 
 #endif /* OPT_PAGING */
 #endif /* _COREMAP_H_ */

@@ -1,36 +1,181 @@
 #include <types.h>
 #include <lib.h>
-#include <vm.h>
-#include <machine/vm.h>
 #include <spinlock.h>
-#include <proc.h>
-#include <current.h>
-#include <addrspace.h>
-#include <kern/errno.h>
-#include <spl.h>
-#include <mips/tlb.h>
-
+#include <machine/vm.h> 
 #include "opt-paging.h"
 #if OPT_PAGING
 #include <coremap.h>
 
-/* M0: struttura minima */
-static struct coremap_entry *coremap = NULL;
-static unsigned coremap_nframes = 0;
+/* Dichiarati in arch/mips/vm/ram.c */
+extern paddr_t ram_getsize(void);
+extern paddr_t ram_getfirstfree(void);
 
-void coremap_bootstrap(void) {
-    /* M0: per ora solo placeholder. In M1/M2 useremo ram_getfirstfree/size */
-    coremap = NULL;
-    coremap_nframes = 0;
+/* Stato frame */
+enum cm_state
+{
+    CM_FREE = 0,
+    CM_FIXED = 1,
+    CM_ALLOC = 2
+};
+
+struct cm_entry
+{
+    uint8_t state; /* FREE, FIXED (riservato kernel), ALLOC */
+    uint8_t _pad8[3];
+    uint32_t alloc_npages; /* valido sul primo frame di un blocco allocato */
+    /* opzionale per M2/M3: reverse map */
+    void *owner_as;      /* addrspace proprietario (hint) */
+    vaddr_t owner_vaddr; /* vaddr mappata (hint) */
+};
+
+static struct cm_entry *cm = NULL;
+static unsigned long cm_nframes = 0;
+static struct spinlock cm_lock = SPINLOCK_INITIALIZER;
+static int cm_ready = 0;
+
+/* Utility */
+static inline unsigned long
+pa_to_frame(paddr_t pa) { return (unsigned long)(pa / PAGE_SIZE); }
+
+static inline paddr_t
+frame_to_pa(unsigned long f) { return (paddr_t)(f * PAGE_SIZE); }
+
+/* Inizializza la coremap nello spazio fisico: la tabella è piazzata
+ * a partire da ram_getfirstfree(), poi marcata come FIXED. */
+void coremap_bootstrap(void)
+{
+    KASSERT(cm_ready == 0);
+
+    paddr_t lastpaddr = ram_getsize();
+    paddr_t firstfree = ram_getfirstfree(); /* invalida ram_stealmem */
+
+    cm_nframes = (unsigned long)(lastpaddr / PAGE_SIZE);
+    if (cm_nframes == 0)
+    {
+        panic("coremap_bootstrap: no RAM frames\n");
+    }
+
+    /* Dimensione tabella e allineamento a pagina */
+    size_t table_bytes = cm_nframes * sizeof(struct cm_entry);
+    size_t table_bytes_aligned = (table_bytes + PAGE_SIZE - 1) & PAGE_FRAME;
+
+    /* La coremap risiede in KSEG0 a partire da firstfree */
+    vaddr_t cm_vaddr = PADDR_TO_KVADDR(firstfree);
+    cm = (struct cm_entry *)cm_vaddr;
+
+    /* Pagine occupate da kernel + coremap */
+    paddr_t managed_start = firstfree + table_bytes_aligned;
+    unsigned long fixed_frames = (unsigned long)(managed_start / PAGE_SIZE);
+
+    /* Inizializza tutta la tabella */
+    for (unsigned long i = 0; i < cm_nframes; i++)
+    {
+        cm[i].state = (i < fixed_frames) ? CM_FIXED : CM_FREE;
+        cm[i].alloc_npages = 0;
+        cm[i].owner_as = NULL;
+        cm[i].owner_vaddr = 0;
+    }
+
+    cm_ready = 1;
+    kprintf("[PAGING] coremap: %lu frames, %lu fixed, %lu free\n",
+            cm_nframes, fixed_frames, cm_nframes - fixed_frames);
 }
 
-paddr_t coremap_alloc_page(void) {
-    /* M0: nessuna alloc reale — ritorna 0 per indicare “non implementato” */
-    return (paddr_t)0;
+int coremap_is_ready(void)
+{
+    return cm_ready;
 }
 
-void coremap_free_page(paddr_t pa) {
-    (void)pa;
+/* Cerca il primo blocco contiguo di npages FREE (first-fit) */
+paddr_t
+coremap_alloc_npages(unsigned long npages)
+{
+    if (!cm_ready || npages == 0)
+        return 0;
+
+    spinlock_acquire(&cm_lock);
+
+    unsigned long run = 0;
+    unsigned long start = 0;
+
+    for (unsigned long i = 0; i < cm_nframes; i++)
+    {
+        if (cm[i].state == CM_FREE)
+        {
+            if (run == 0)
+                start = i;
+            run++;
+            if (run == npages)
+            {
+                /* marca il blocco come allocato */
+                for (unsigned long j = 0; j < npages; j++)
+                {
+                    cm[start + j].state = CM_ALLOC;
+                    cm[start + j].owner_as = NULL;
+                    cm[start + j].owner_vaddr = 0;
+                }
+                cm[start].alloc_npages = (uint32_t)npages;
+                paddr_t pa = frame_to_pa(start);
+                spinlock_release(&cm_lock);
+                return pa;
+            }
+        }
+        else
+        {
+            run = 0;
+        }
+    }
+
+    spinlock_release(&cm_lock);
+    return 0; /* out of physical memory */
+}
+
+paddr_t
+coremap_alloc_page(void)
+{
+    return coremap_alloc_npages(1);
+}
+
+void coremap_free_npages(paddr_t pa, unsigned long npages)
+{
+    if (!cm_ready || pa == 0 || npages == 0)
+        return;
+
+    unsigned long start = pa_to_frame(pa);
+    KASSERT(start + npages <= cm_nframes);
+
+    spinlock_acquire(&cm_lock);
+
+    /* Se npages è sconosciuto, prova a leggere dal primo frame */
+    if (npages == (unsigned long)-1)
+    {
+        if (cm[start].state == CM_ALLOC && cm[start].alloc_npages > 0)
+        {
+            npages = cm[start].alloc_npages;
+        }
+        else
+        {
+            /* blocco non riconosciuto: non fare nulla */
+            spinlock_release(&cm_lock);
+            return;
+        }
+    }
+
+    for (unsigned long j = 0; j < npages; j++)
+    {
+        cm[start + j].state = CM_FREE;
+        cm[start + j].owner_as = NULL;
+        cm[start + j].owner_vaddr = 0;
+        if (j == 0)
+            cm[start].alloc_npages = 0;
+    }
+
+    spinlock_release(&cm_lock);
+}
+
+void coremap_free_page(paddr_t pa)
+{
+    coremap_free_npages(pa, 1);
 }
 
 #endif /* OPT_PAGING */
