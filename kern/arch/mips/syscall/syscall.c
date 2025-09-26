@@ -109,7 +109,7 @@ void syscall(struct trapframe *tf)
 		break;
 
 		/* Add stuff here */
-#if OPT_SYSCALLS
+#if OPT_SYSCALL
 
 	case SYS_write:
 		retval = sys_write((int)tf->tf_a0,
