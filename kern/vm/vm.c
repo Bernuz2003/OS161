@@ -19,6 +19,7 @@
 #include <uio.h>
 #include <vnode.h>
 #include <synch.h>
+#include <swapfile.h>
 
 extern paddr_t ram_stealmem(unsigned long npages);
 
@@ -68,18 +69,17 @@ void vm_tlbshootdown(const struct tlbshootdown *ts)
     (void)ts;
 }
 
-/* Seleziona una vittima “sicura” (FILE-backed, RO, coperta da file),
- * la smonta dal vecchio AS e riusa il frame per (newas,newva).
- * Ritorna 0 su successo, ENOMEM se non c’è nessuna vittima idonea.
+/* Evict a frame e riusalo per (newas,newva).
+ * Politica:
+ *  - preferisci scartare FILE-backed + RO + covered (nessun I/O);
+ *  - altrimenti fai swap-out; aggiorna PTE vittima -> INSWAP.
+ * Ritorna 0 e *out_pa = frame riusabile; ENOMEM se non trovi vittime idonee.
  */
 static int
 evict_and_reuse_frame(struct addrspace *newas, vaddr_t newva, paddr_t *out_pa)
 {
-    /* Proviamo un po’ di volte perché potremmo scartare vari candidati:
-       bound difensivo, non dipende dalla size della RAM */
-    const unsigned MAX_SCAN = 2048;
+    const unsigned MAX_SCAN = 2048; /* bound difensivo */
     unsigned scans = 0;
-
     vaddr_t newva_aligned = newva & PAGE_FRAME;
 
     while (scans++ < MAX_SCAN)
@@ -87,26 +87,19 @@ evict_and_reuse_frame(struct addrspace *newas, vaddr_t newva, paddr_t *out_pa)
         paddr_t cand = 0;
         if (coremap_pick_victim(&cand) != 0)
         {
-            /* Nessun candidato evictabile (tutti pinned o nessun CM_ALLOC) */
-            return ENOMEM;
+            return ENOMEM; /* nessun candidato evictabile */
         }
 
-        /* Interroga owner/stato del candidato */
+        /* Metadati coremap del candidato */
         struct addrspace *oas = NULL;
         vaddr_t ova = 0;
         int pinned = 0, st = 0;
-        if (coremap_get_owner(cand, &oas, &ova, &pinned, &st) != 0)
+        if (coremap_get_owner(cand, &oas, &ova, &pinned, &st) != 0 || oas == NULL)
         {
-            /* entry non coerente, prova un altro */
-            continue;
-        }
-        if (oas == NULL)
-        {
-            /* niente owner registrato: rimani prudente, salta */
-            continue;
+            continue; /* inconsistente: prova altro */
         }
 
-        /* Cerca la PTE del vecchio proprietario e verifica che punti proprio a 'cand' */
+        /* PTE della vittima: deve puntare proprio a 'cand' */
         struct pte *opte = NULL;
         if (oas->pt_lock)
             lock_acquire(oas->pt_lock);
@@ -115,61 +108,63 @@ evict_and_reuse_frame(struct addrspace *newas, vaddr_t newva, paddr_t *out_pa)
         {
             if (oas->pt_lock)
                 lock_release(oas->pt_lock);
-            /* qualcuno l’ha già cambiata o non è coerente: prova altro */
-            continue;
+            continue; /* mappa cambiata: riprova */
         }
 
-        /* Verifica “safe to evict senza swap”:
-           - segmento FILE-backed
-           - pagina non scrivibile (evitiamo dirty non tracciato in C1.1)
-           - pagina coperta dal file (pageoff < file_len) */
+        /* Prova "drop-in-place" (nessun I/O) se FILE-backed + RO + covered */
         struct vm_segment *seg = NULL;
         int have_seg = (seg_find(oas, ova, &seg) == 0) && seg;
-        if (!have_seg || seg->backing != SEG_BACK_FILE)
+        if (have_seg && seg->backing == SEG_BACK_FILE && !(opte->perms & PTE_PERM_W))
         {
-            if (oas->pt_lock)
-                lock_release(oas->pt_lock);
-            continue;
-        }
-        if (opte->perms & PTE_PERM_W)
-        {
-            if (oas->pt_lock)
-                lock_release(oas->pt_lock);
-            continue;
-        }
-        vaddr_t pageoff = (ova & PAGE_FRAME) - seg->vbase;
-        if ((size_t)pageoff >= seg->file_len)
-        {
-            if (oas->pt_lock)
-                lock_release(oas->pt_lock);
-            continue;
-        }
-
-        /* Se il vecchio AS è quello corrente, invalida l’eventuale entry TLB mirata */
-        if (oas == proc_getas())
-        {
-            uint32_t ehi = (uint32_t)(ova & TLBHI_VPAGE);
-            int spl = splhigh();
-            int idx = tlb_probe(ehi, 0);
-            if (idx >= 0)
+            vaddr_t pageoff = (ova & PAGE_FRAME) - seg->vbase;
+            if ((size_t)pageoff < seg->file_len)
             {
-                tlb_write(TLBHI_INVALID(idx), TLBLO_INVALID(), idx);
+                /* invalida eventuale TLB nel processo owner */
+                if (oas == proc_getas())
+                {
+                    (void)tlb_invalidate_vaddr(ova);
+                }
+                /* smonta la PTE della vittima */
+                opte->state = PTE_NOTPRESENT;
+                opte->paddr = 0;
+                if (oas->pt_lock)
+                    lock_release(oas->pt_lock);
+
+                /* riassegna il frame al nuovo fault */
+                coremap_set_owner(cand, newas, newva_aligned);
+                *out_pa = cand;
+                return 0;
             }
-            splx(spl);
         }
 
-        /* Smonta la PTE del vecchio proprietario */
-        opte->state = PTE_NOTPRESENT;
-        opte->paddr = 0;
-        /* (manteniamo opte->perms: pt_lookup_create la ricalcolerà comunque) */
+        /* Altrimenti: swap-out della vittima */
+        uint32_t slot = 0;
+        int r = swap_out_page(cand, &slot);
+        if (r == 0)
+        {
+            /* invalida TLB mirato se owner è quello corrente */
+            if (oas == proc_getas())
+            {
+                (void)tlb_invalidate_vaddr(ova);
+            }
+            /* PTE vittima -> INSWAP */
+            opte->swapid = slot;
+            opte->state = PTE_INSWAP;
+            opte->paddr = 0;
+            if (oas->pt_lock)
+                lock_release(oas->pt_lock);
+
+            vmstats_inc_swapfile_writes();
+
+            /* riusa il frame per (newas,newva) */
+            coremap_set_owner(cand, newas, newva_aligned);
+            *out_pa = cand;
+            return 0;
+        }
+
+        /* swap-out fallito: libera lock e prova altro */
         if (oas->pt_lock)
             lock_release(oas->pt_lock);
-
-        /* Assegna il frame al nuovo fault */
-        coremap_set_owner(cand, newas, newva_aligned);
-
-        *out_pa = cand;
-        return 0;
     }
 
     return ENOMEM;
@@ -185,7 +180,6 @@ int vm_fault(int faulttype, vaddr_t faultaddress)
     case VM_FAULT_WRITE:
         break;
     case VM_FAULT_READONLY:
-        /* Tentativo di scrittura su pagina marcata RO (es. text) */
         return EFAULT;
     default:
         return EINVAL;
@@ -197,7 +191,7 @@ int vm_fault(int faulttype, vaddr_t faultaddress)
     if (as == NULL)
         return EFAULT;
 
-    /* Individua regione: segmento ELF, stack o heap */
+    /* Individua regione */
     struct vm_segment *seg = NULL;
     int in_seg = (seg_find(as, va, &seg) == 0);
     int in_stack = (as->stack_limit && va >= as->stack_limit && va < as->stack_top);
@@ -208,7 +202,7 @@ int vm_fault(int faulttype, vaddr_t faultaddress)
         return EFAULT;
     }
 
-    /* Permessi software attesi per la pagina */
+    /* Permessi attesi */
     uint8_t perms = 0;
     if (in_seg)
     {
@@ -221,26 +215,22 @@ int vm_fault(int faulttype, vaddr_t faultaddress)
     }
     else
     {
-        /* heap/stack: RW */
-        perms = PTE_PERM_R | PTE_PERM_W;
+        perms = PTE_PERM_R | PTE_PERM_W; /* heap/stack */
     }
-
-    /* Scrittura non permessa? */
     if (faulttype == VM_FAULT_WRITE && !(perms & PTE_PERM_W))
     {
         return EFAULT;
     }
 
-    /* Ottieni/crea la PTE (crea L2 se manca) */
+    /* PTE (crea L2 se manca) */
     struct pte *pte = pt_lookup_create(as, va);
     if (pte == NULL)
         return ENOMEM;
 
-    /* Se la pagina è già in RAM: TLB reload */
+    /* 1) PTE già in RAM -> solo reload TLB */
     if (pte->state == PTE_INRAM)
     {
         int used_free = 0;
-        /* stats: fault gestito */
         vmstats_inc_tlb_faults();
         vmstats_inc_tlb_reloads();
 
@@ -252,16 +242,54 @@ int vm_fault(int faulttype, vaddr_t faultaddress)
         return 0;
     }
 
-    /* Pagina non presente: serve allocare frame e “riempire” */
-    paddr_t pa = coremap_alloc_page_user(as, va);
+    /* 2) Pagina nello swap -> swap-in (con fallback eviction se no frame liberi) */
+    if (pte->state == PTE_INSWAP)
+    {
+        paddr_t pa = coremap_alloc_page();
+        if (pa == 0)
+        {
+            int er = evict_and_reuse_frame(as, va, &pa);
+            if (er)
+                return er;
+        }
+
+        int r = swap_in_page(pte->swapid, pa);
+        if (r)
+        {
+            coremap_free_page(pa);
+            return r;
+        }
+        swap_release_slot(pte->swapid);
+        pte->swapid = 0;
+
+        if (pte->perms == 0)
+            pte->perms = perms;
+        pte->paddr = pa;
+        pte->state = PTE_INRAM;
+
+        /* owner-tracking */
+        coremap_set_owner(pa, as, va);
+
+        vmstats_inc_tlb_faults();
+        vmstats_inc_pf_disk();
+        vmstats_inc_pf_from_swapfile();
+
+        int used_free = 0;
+        (void)tlb_insert_rr(va, pa, (pte->perms & PTE_PERM_W) != 0, &used_free);
+        if (used_free)
+            vmstats_inc_tlb_faults_with_free();
+        else
+            vmstats_inc_tlb_faults_with_replace();
+        return 0;
+    }
+
+    /* 3) Primo page-fault: FILE-backed (ELF) o ZERO-backed */
+    paddr_t pa = coremap_alloc_page();
     if (pa == 0)
     {
-        /* Prova eviction “senza swap”: solo text RO ricaricabile da ELF */
         int er = evict_and_reuse_frame(as, va, &pa);
-        if (er != 0)
-        {
-            return er; /* ENOMEM se nessuna vittima idonea */
-        }
+        if (er)
+            return er;
     }
 
     int do_zero_all = 0;
@@ -270,13 +298,7 @@ int vm_fault(int faulttype, vaddr_t faultaddress)
 
     if (in_seg && seg->backing == SEG_BACK_FILE)
     {
-        /* Page-in da ELF:
-           - calcola offset nel segmento
-           - readlen = min(PAGE_SIZE, max(0, file_len - pageoff))
-           - se readlen < PAGE_SIZE, azzera il resto
-        */
         vaddr_t pageoff = va - seg->vbase;
-
         if (pageoff < seg->file_len)
         {
             size_t remaining = seg->file_len - pageoff;
@@ -285,65 +307,63 @@ int vm_fault(int faulttype, vaddr_t faultaddress)
         }
         else
         {
-            /* oltre la porzione caricata da file → zero-fill */
             do_zero_all = 1;
         }
     }
     else
     {
-        /* ZERO-backed (BSS/heap/stack) */
-        do_zero_all = 1;
+        do_zero_all = 1; /* ZERO-backed */
     }
 
     void *kdst = (void *)PADDR_TO_KVADDR(pa);
-
     if (do_zero_all)
     {
         bzero(kdst, PAGE_SIZE);
     }
     else
     {
-        /* Leggi da vnode in spazio KSEG0 */
         struct iovec iov;
         struct uio ku;
         uio_kinit(&iov, &ku, kdst, readlen, fileoff, UIO_READ);
         int r = VOP_READ(seg->vn, &ku);
         if (r)
         {
-            /* Fall-back: libera frame e fallisci */
             coremap_free_page(pa);
             return r;
         }
         if (ku.uio_resid != 0)
         {
-            /* short read: completa a zero */
             size_t done = readlen - ku.uio_resid;
             if (done > PAGE_SIZE)
                 done = PAGE_SIZE;
             if (done < PAGE_SIZE)
-            {
                 bzero((char *)kdst + done, PAGE_SIZE - done);
-            }
         }
         else if (readlen < PAGE_SIZE)
         {
-            /* Pad a zero il resto della pagina */
             bzero((char *)kdst + readlen, PAGE_SIZE - readlen);
         }
     }
 
-    /* Aggiorna PTE */
     if (pte->perms == 0)
         pte->perms = perms;
     pte->paddr = pa;
     pte->state = PTE_INRAM;
 
-    /* stats */
-    vmstats_inc_tlb_faults();
-    vmstats_inc_pf_disk();
-    vmstats_inc_pf_from_elf();
+    /* owner-tracking */
+    coremap_set_owner(pa, as, va);
 
-    /* Inserisci nel TLB (RR) con DIRTY = 1 solo se W permesso */
+    vmstats_inc_tlb_faults();
+    if (do_zero_all)
+    {
+        vmstats_inc_pf_zeroed();
+    }
+    else
+    {
+        vmstats_inc_pf_disk();
+        vmstats_inc_pf_from_elf();
+    }
+
     int used_free = 0;
     (void)tlb_insert_rr(va, pa, (pte->perms & PTE_PERM_W) != 0, &used_free);
     if (used_free)

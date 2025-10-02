@@ -67,7 +67,7 @@ int tlb_invalidate_vaddr(vaddr_t vaddr)
     }
 
     splx(spl);
-    return 1; /* non presente */
+    return 0; /* non presente */
 }
 
 #endif /* OPT_PAGING */
