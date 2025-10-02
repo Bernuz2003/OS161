@@ -49,6 +49,7 @@
 #include <machine/vm.h>
 #include <synch.h>
 #include <pt.h>
+#include <vmstats.h>
 #endif
 
 struct addrspace *as_create(void)
@@ -136,6 +137,7 @@ void as_activate(void)
 		tlb_write(TLBHI_INVALID(i), TLBLO_INVALID(), i);
 	}
 	splx(spl);
+	vmstats_inc_tlb_invalidations();
 #else
 	/* DUMBVM: già gestito in dumbvm.c quando attivo */
 	(void)as;

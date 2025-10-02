@@ -53,4 +53,21 @@ int tlb_insert_rr(vaddr_t vaddr, paddr_t paddr, int writable, int *used_free_slo
     return 0;
 }
 
+int tlb_invalidate_vaddr(vaddr_t vaddr)
+{
+    int spl = splhigh();
+
+    uint32_t ehi = (uint32_t)(vaddr & TLBHI_VPAGE);
+    int idx = tlb_probe(ehi, 0);
+    if (idx >= 0)
+    {
+        tlb_write(TLBHI_INVALID(idx), TLBLO_INVALID(), idx);
+        splx(spl);
+        return 0; /* invalidato */
+    }
+
+    splx(spl);
+    return 1; /* non presente */
+}
+
 #endif /* OPT_PAGING */

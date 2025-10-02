@@ -778,27 +778,31 @@ thread_startup(void (*entrypoint)(void *data1, unsigned long data2),
 void
 thread_exit(void)
 {
-	struct thread *cur;
+    struct thread *cur = curthread;
 
-	cur = curthread;
+    /*
+     * Detach from our process. You might need to move this action
+     * around, depending on how your wait/exit works.
+     *
+     * ---> Rendiamolo idempotente: se sys__exit ha già staccato,
+     *      t->t_proc è NULL e NON richiamiamo proc_remthread.
+     */
+    if (cur->t_proc != NULL) {
+        proc_remthread(cur);
+    }
 
-	/*
-	 * Detach from our process. You might need to move this action
-	 * around, depending on how your wait/exit works.
-	 */
-	proc_remthread(cur);
+    /* Make sure we *are* detached (move this only if you're sure!) */
+    KASSERT(cur->t_proc == NULL);
 
-	/* Make sure we *are* detached (move this only if you're sure!) */
-	KASSERT(cur->t_proc == NULL);
+    /* Check the stack guard band. */
+    thread_checkstack(cur);
 
-	/* Check the stack guard band. */
-	thread_checkstack(cur);
-
-	/* Interrupts off on this processor */
-        splhigh();
-	thread_switch(S_ZOMBIE, NULL, NULL);
-	panic("braaaaaaaiiiiiiiiiiinssssss\n");
+    /* Interrupts off on this processor */
+    splhigh();
+    thread_switch(S_ZOMBIE, NULL, NULL);
+    panic("braaaaaaaiiiiiiiiiiinssssss\n");
 }
+
 
 /*
  * Yield the cpu to another process, but stay runnable.

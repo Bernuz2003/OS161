@@ -78,7 +78,7 @@ void syscall(struct trapframe *tf)
 {
 	int callno;
 	int32_t retval;
-	int err;
+	int err = 0;
 
 	KASSERT(curthread != NULL);
 	KASSERT(curthread->t_curspl == 0);
@@ -143,11 +143,13 @@ void syscall(struct trapframe *tf)
 							 (userptr_t)tf->tf_a1,
 							 (int)tf->tf_a2);
 		if (retval < 0)
-			err = ENOSYS else err = 0;
+			err = ENOSYS;
+		else 
+			err = 0;
 		break;
 
 	case SYS_getpid:
-		retvla = sys_getpid();
+		retval = sys_getpid();
 		if (retval < 0)
 			err = ENOSYS;
 		else

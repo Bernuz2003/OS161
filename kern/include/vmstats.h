@@ -3,26 +3,23 @@
 
 #include "opt-paging.h"
 #if OPT_PAGING
-#include <types.h>
-
-struct vm_stats {
-    /* TLB */
-    uint64_t tlb_faults;
-    uint64_t tlb_faults_with_free;
-    uint64_t tlb_faults_with_replace;
-    uint64_t tlb_invalidations;
-    uint64_t tlb_reloads;
-    /* Page faults */
-    uint64_t pf_zeroed;
-    uint64_t pf_disk;
-    uint64_t pf_from_elf;
-    uint64_t pf_from_swapfile;
-    uint64_t swapfile_writes;
-};
 
 void vmstats_bootstrap(void);
+void vmstats_print_and_check(void);
+
+/* Contatori richiesti dal progetto */
+void vmstats_inc_tlb_faults(void);
+void vmstats_inc_tlb_faults_with_free(void);
+void vmstats_inc_tlb_faults_with_replace(void);
 void vmstats_inc_tlb_invalidations(void);
-void vm_shutdown(void); /* stampa e verifica identità in M1/M3 */
+void vmstats_inc_tlb_reloads(void);
+
+void vmstats_inc_pf_zeroed(void);
+void vmstats_inc_pf_disk(void);
+void vmstats_inc_pf_from_elf(void);
+void vmstats_inc_pf_from_swapfile(void);
+
+void vmstats_inc_swapfile_writes(void);
 
 #endif /* OPT_PAGING */
 #endif /* _VMSTATS_H_ */

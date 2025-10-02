@@ -1,10 +1,12 @@
 #include <types.h>
 #include <lib.h>
 #include <spinlock.h>
-#include <machine/vm.h> 
+#include <machine/vm.h>
 #include "opt-paging.h"
 #if OPT_PAGING
 #include <coremap.h>
+#include <addrspace.h>
+#include <kern/errno.h>
 
 /* Dichiarati in arch/mips/vm/ram.c */
 extern paddr_t ram_getsize(void);
@@ -20,18 +22,21 @@ enum cm_state
 
 struct cm_entry
 {
-    uint8_t state; /* FREE, FIXED (riservato kernel), ALLOC */
-    uint8_t _pad8[3];
+    uint8_t state;  /* FREE, FIXED (kernel riservato), ALLOC */
+    uint8_t pinned; /* 1 = non evictabile (kpages o I/O) */
+    uint8_t _pad8[2];
     uint32_t alloc_npages; /* valido sul primo frame di un blocco allocato */
-    /* opzionale per M2/M3: reverse map */
-    void *owner_as;      /* addrspace proprietario (hint) */
-    vaddr_t owner_vaddr; /* vaddr mappata (hint) */
+    void *owner_as;        /* addrspace proprietario (hint) */
+    vaddr_t owner_vaddr;   /* vaddr mappata (hint) */
 };
 
 static struct cm_entry *cm = NULL;
 static unsigned long cm_nframes = 0;
 static struct spinlock cm_lock = SPINLOCK_INITIALIZER;
 static int cm_ready = 0;
+
+/* cursore round-robin sui frame fisici */
+static unsigned long rr_cursor = 0;
 
 /* Utility */
 static inline unsigned long
@@ -71,6 +76,7 @@ void coremap_bootstrap(void)
     for (unsigned long i = 0; i < cm_nframes; i++)
     {
         cm[i].state = (i < fixed_frames) ? CM_FIXED : CM_FREE;
+        cm[i].pinned = (i < fixed_frames) ? 1 : 0; /* tutto ciò che è FIXED è pinned */
         cm[i].alloc_npages = 0;
         cm[i].owner_as = NULL;
         cm[i].owner_vaddr = 0;
@@ -111,6 +117,7 @@ coremap_alloc_npages(unsigned long npages)
                 for (unsigned long j = 0; j < npages; j++)
                 {
                     cm[start + j].state = CM_ALLOC;
+                    cm[start + j].pinned = 0; /* default: non pinned (pag. utente) */
                     cm[start + j].owner_as = NULL;
                     cm[start + j].owner_vaddr = 0;
                 }
@@ -164,6 +171,7 @@ void coremap_free_npages(paddr_t pa, unsigned long npages)
     for (unsigned long j = 0; j < npages; j++)
     {
         cm[start + j].state = CM_FREE;
+        cm[start + j].pinned = 0;
         cm[start + j].owner_as = NULL;
         cm[start + j].owner_vaddr = 0;
         if (j == 0)
@@ -176,6 +184,123 @@ void coremap_free_npages(paddr_t pa, unsigned long npages)
 void coremap_free_page(paddr_t pa)
 {
     coremap_free_npages(pa, 1);
+}
+
+/* Imposta/smarca pinned su un range */
+void coremap_mark_pinned(paddr_t pa, unsigned long npages, int pinned)
+{
+    if (!cm_ready || pa == 0 || npages == 0)
+        return;
+    unsigned long start = pa_to_frame(pa);
+    KASSERT(start + npages <= cm_nframes);
+
+    spinlock_acquire(&cm_lock);
+    for (unsigned long j = 0; j < npages; j++)
+    {
+        if (cm[start + j].state != CM_ALLOC && cm[start + j].state != CM_FIXED)
+        {
+            /* non dovrebbe succedere, ma non brickare il kernel */
+            continue;
+        }
+        cm[start + j].pinned = pinned ? 1 : 0;
+    }
+    spinlock_release(&cm_lock);
+}
+
+/* Setta l’owner di un frame (as, va) */
+void coremap_set_owner(paddr_t pa, struct addrspace *as, vaddr_t va)
+{
+    if (!cm_ready || pa == 0)
+        return;
+    unsigned long f = pa_to_frame(pa);
+    KASSERT(f < cm_nframes);
+
+    spinlock_acquire(&cm_lock);
+    cm[f].owner_as = (void *)as;
+    cm[f].owner_vaddr = va;
+    spinlock_release(&cm_lock);
+}
+
+/* Alloca 1 pagina per uso utente e annota owner (as, va) */
+paddr_t
+coremap_alloc_page_user(struct addrspace *as, vaddr_t va)
+{
+    paddr_t pa = coremap_alloc_page();
+    if (pa == 0)
+        return 0;
+
+    coremap_set_owner(pa, as, va);
+    /* Non pinned per default (rimane evictabile quando implementeremo M2) */
+    return pa;
+}
+
+/* Alloc contigua per il kernel già marcata pinned (evita boilerplate nei call sites) */
+paddr_t
+coremap_alloc_npages_kernel(unsigned long npages)
+{
+    paddr_t pa = coremap_alloc_npages(npages);
+    if (pa != 0)
+    {
+        coremap_mark_pinned(pa, npages, 1);
+    }
+    return pa;
+}
+
+/* Ritorna un frame candidato vittima: CM_ALLOC && !pinned */
+int coremap_pick_victim(paddr_t *out_pa)
+{
+    if (!cm_ready || out_pa == NULL)
+        return ENOMEM;
+
+    spinlock_acquire(&cm_lock);
+
+    unsigned long scanned = 0;
+    unsigned long idx = rr_cursor;
+
+    while (scanned < cm_nframes)
+    {
+        const struct cm_entry *e = &cm[idx];
+
+        if (e->state == CM_ALLOC && e->pinned == 0)
+        {
+            /* trovato candidato */
+            *out_pa = frame_to_pa(idx);
+            rr_cursor = (idx + 1) % cm_nframes;
+            spinlock_release(&cm_lock);
+            return 0;
+        }
+
+        idx = (idx + 1) % cm_nframes;
+        scanned++;
+    }
+
+    spinlock_release(&cm_lock);
+    return ENOMEM; /* nessun candidato evictabile */
+}
+
+int coremap_get_owner(paddr_t pa,
+                      struct addrspace **as_out,
+                      vaddr_t *va_out,
+                      int *pinned_out,
+                      int *state_out)
+{
+    if (!cm_ready || pa == 0)
+        return EINVAL;
+    unsigned long f = pa_to_frame(pa);
+    if (f >= cm_nframes)
+        return EINVAL;
+
+    spinlock_acquire(&cm_lock);
+    if (as_out)
+        *as_out = (struct addrspace *)cm[f].owner_as;
+    if (va_out)
+        *va_out = cm[f].owner_vaddr;
+    if (pinned_out)
+        *pinned_out = cm[f].pinned ? 1 : 0;
+    if (state_out)
+        *state_out = (int)cm[f].state;
+    spinlock_release(&cm_lock);
+    return 0;
 }
 
 #endif /* OPT_PAGING */

@@ -43,6 +43,7 @@
 #include <sfs.h>
 #include <syscall.h>
 #include <test.h>
+#include <vmstats.h>
 #include "opt-sfs.h"
 #include "opt-net.h"
 
@@ -491,6 +492,18 @@ cmd_kheapdump(int nargs, char **args)
 	return 0;
 }
 
+static
+int
+cmd_vmstats(int nargs, char **args)
+{
+	(void)nargs;
+	(void)args;
+	
+	vmstats_print_and_check();
+
+	return 0;
+}
+
 ////////////////////////////////////////
 //
 // Menus.
@@ -649,6 +662,7 @@ static struct {
 	{ "kh",         cmd_kheapstats },
 	{ "khgen",      cmd_kheapgeneration },
 	{ "khdump",     cmd_kheapdump },
+	{ "vmstats", 	cmd_vmstats },
 
 	/* base system tests */
 	{ "at",		arraytest },
