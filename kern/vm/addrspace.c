@@ -66,6 +66,7 @@ struct addrspace *as_create(void)
 	as->pt_l1 = NULL;
 	as->pt_l1_entries = 0;
 	as->pt_lock = lock_create("aspt");
+
 	if (!as->pt_lock)
 	{
 		kfree(as);
@@ -130,7 +131,7 @@ void as_activate(void)
 		return;
 
 #if OPT_PAGING
-	/* Flush totale TLB su context switch: richiesto dalle specifiche */
+	/* Flush totale TLB su context switch */
 	int spl = splhigh();
 	for (int i = 0; i < NUM_TLB; i++)
 	{
