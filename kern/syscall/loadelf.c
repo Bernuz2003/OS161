@@ -18,8 +18,7 @@
  * Dumbvm path: preload segment into user space.
  * This helper is compiled only when OPT_PAGING == 0.
  */
-static
-int
+static int
 load_segment(struct addrspace *as, struct vnode *v,
              off_t offset, vaddr_t vaddr,
              size_t memsize, size_t filesize,
@@ -29,7 +28,8 @@ load_segment(struct addrspace *as, struct vnode *v,
     struct uio u;
     int result;
 
-    if (filesize > memsize) {
+    if (filesize > memsize)
+    {
         kprintf("ELF: warning: segment filesize > segment memsize\n");
         filesize = memsize;
     }
@@ -38,21 +38,23 @@ load_segment(struct addrspace *as, struct vnode *v,
           (unsigned long)filesize, (unsigned long)vaddr);
 
     iov.iov_ubase = (userptr_t)vaddr;
-    iov.iov_len = memsize;        // length of the memory space
+    iov.iov_len = memsize; // length of the memory space
     u.uio_iov = &iov;
     u.uio_iovcnt = 1;
-    u.uio_resid = filesize;       // amount to read from the file
+    u.uio_resid = filesize; // amount to read from the file
     u.uio_offset = offset;
     u.uio_segflg = is_executable ? UIO_USERISPACE : UIO_USERSPACE;
     u.uio_rw = UIO_READ;
     u.uio_space = as;
 
     result = VOP_READ(v, &u);
-    if (result) {
+    if (result)
+    {
         return result;
     }
 
-    if (u.uio_resid != 0) {
+    if (u.uio_resid != 0)
+    {
         /* short read; problem with executable? */
         kprintf("ELF: short read on segment - file truncated?\n");
         return ENOEXEC;
@@ -82,11 +84,10 @@ load_segment(struct addrspace *as, struct vnode *v,
  *
  * Returns the entry point (initial PC) for the program in ENTRYPOINT.
  */
-int
-load_elf(struct vnode *v, vaddr_t *entrypoint)
+int load_elf(struct vnode *v, vaddr_t *entrypoint)
 {
-    Elf_Ehdr eh;   /* Executable header */
-    Elf_Phdr ph;   /* "Program header" = segment header */
+    Elf_Ehdr eh; /* Executable header */
+    Elf_Phdr ph; /* "Program header" = segment header */
     int result, i;
     struct iovec iov;
     struct uio ku;
@@ -97,11 +98,13 @@ load_elf(struct vnode *v, vaddr_t *entrypoint)
     /* Read the executable header from offset 0 in the file. */
     uio_kinit(&iov, &ku, &eh, sizeof(eh), 0, UIO_READ);
     result = VOP_READ(v, &ku);
-    if (result) {
+    if (result)
+    {
         return result;
     }
 
-    if (ku.uio_resid != 0) {
+    if (ku.uio_resid != 0)
+    {
         /* short read; problem with executable? */
         kprintf("ELF: short read on header - file truncated?\n");
         return ENOEXEC;
@@ -115,11 +118,12 @@ load_elf(struct vnode *v, vaddr_t *entrypoint)
         eh.e_ident[EI_MAG2] != ELFMAG2 ||
         eh.e_ident[EI_MAG3] != ELFMAG3 ||
         eh.e_ident[EI_CLASS] != ELFCLASS32 ||
-        eh.e_ident[EI_DATA]  != ELFDATA2MSB ||
+        eh.e_ident[EI_DATA] != ELFDATA2MSB ||
         eh.e_ident[EI_VERSION] != EV_CURRENT ||
         eh.e_version != EV_CURRENT ||
         eh.e_type != ET_EXEC ||
-        eh.e_machine != EM_MACHINE) {
+        eh.e_machine != EM_MACHINE)
+    {
         return ENOEXEC;
     }
 
@@ -128,29 +132,45 @@ load_elf(struct vnode *v, vaddr_t *entrypoint)
      *  - With OPT_PAGING: register FILE-backed segments lazily via seg_add_file.
      *  - Without OPT_PAGING: original dumbvm as_define_region.
      */
-    for (i = 0; i < eh.e_phnum; i++) {
+    for (i = 0; i < eh.e_phnum; i++)
+    {
         off_t offset = eh.e_phoff + i * eh.e_phentsize;
         uio_kinit(&iov, &ku, &ph, sizeof(ph), offset, UIO_READ);
 
         result = VOP_READ(v, &ku);
-        if (result) {
+        if (result)
+        {
             return result;
         }
 
-        if (ku.uio_resid != 0) {
+        if (ku.uio_resid != 0)
+        {
             /* short read; problem with executable? */
             kprintf("ELF: short read on phdr - file truncated?\n");
+
             return ENOEXEC;
         }
 
-        switch (ph.p_type) {
-            case PT_NULL:         continue;
-            case PT_PHDR:         continue;
-            case PT_MIPS_REGINFO: continue;
-            case PT_LOAD:         break;
-            default:
-                kprintf("loadelf: unknown segment type %d\n", ph.p_type);
-                return ENOEXEC;
+        /* DEBUG
+        kprintf("[elf] PT_LOAD? type=%d vaddr=0x%08lx mem=%lu file=%lu flags=0x%x\n",
+                ph.p_type, (unsigned long)ph.p_vaddr,
+                (unsigned long)ph.p_memsz, (unsigned long)ph.p_filesz, ph.p_flags);
+        
+        */
+
+        switch (ph.p_type)
+        {
+        case PT_NULL:
+            continue;
+        case PT_PHDR:
+            continue;
+        case PT_MIPS_REGINFO:
+            continue;
+        case PT_LOAD:
+            break;
+        default:
+            kprintf("loadelf: unknown segment type %d\n", ph.p_type);
+            return ENOEXEC;
         }
 
 #if OPT_PAGING
@@ -161,7 +181,10 @@ load_elf(struct vnode *v, vaddr_t *entrypoint)
 
         result = seg_add_file(as, ph.p_vaddr, ph.p_memsz,
                               r, w, x, v, ph.p_offset, ph.p_filesz);
-        if (result) {
+
+        segments_dump(as);
+        if (result)
+        {
             return result;
         }
 #else
@@ -171,7 +194,8 @@ load_elf(struct vnode *v, vaddr_t *entrypoint)
                                   ph.p_flags & PF_R,
                                   ph.p_flags & PF_W,
                                   ph.p_flags & PF_X);
-        if (result) {
+        if (result)
+        {
             return result;
         }
 #endif
@@ -179,7 +203,8 @@ load_elf(struct vnode *v, vaddr_t *entrypoint)
 
     /* Prepare/complete load hooks (no-op for paging; used by dumbvm). */
     result = as_prepare_load(as);
-    if (result) {
+    if (result)
+    {
         return result;
     }
 
@@ -187,42 +212,52 @@ load_elf(struct vnode *v, vaddr_t *entrypoint)
     /*
      * Pass 2 (ONLY without paging): actually load each PT_LOAD segment.
      */
-    for (i = 0; i < eh.e_phnum; i++) {
+    for (i = 0; i < eh.e_phnum; i++)
+    {
         off_t offset = eh.e_phoff + i * eh.e_phentsize;
         uio_kinit(&iov, &ku, &ph, sizeof(ph), offset, UIO_READ);
 
         result = VOP_READ(v, &ku);
-        if (result) {
+        if (result)
+        {
             return result;
         }
 
-        if (ku.uio_resid != 0) {
+        if (ku.uio_resid != 0)
+        {
             /* short read; problem with executable? */
             kprintf("ELF: short read on phdr - file truncated?\n");
             return ENOEXEC;
         }
 
-        switch (ph.p_type) {
-            case PT_NULL:         continue;
-            case PT_PHDR:         continue;
-            case PT_MIPS_REGINFO: continue;
-            case PT_LOAD:         break;
-            default:
-                kprintf("loadelf: unknown segment type %d\n", ph.p_type);
-                return ENOEXEC;
+        switch (ph.p_type)
+        {
+        case PT_NULL:
+            continue;
+        case PT_PHDR:
+            continue;
+        case PT_MIPS_REGINFO:
+            continue;
+        case PT_LOAD:
+            break;
+        default:
+            kprintf("loadelf: unknown segment type %d\n", ph.p_type);
+            return ENOEXEC;
         }
 
         result = load_segment(as, v, ph.p_offset, ph.p_vaddr,
                               ph.p_memsz, ph.p_filesz,
                               ph.p_flags & PF_X);
-        if (result) {
+        if (result)
+        {
             return result;
         }
     }
 #endif /* !OPT_PAGING */
 
     result = as_complete_load(as);
-    if (result) {
+    if (result)
+    {
         return result;
     }
 

@@ -29,5 +29,7 @@ int seg_add_zero(struct addrspace *as,
 int seg_find(struct addrspace *as, vaddr_t faultaddr,
              struct vm_segment **out);
 
+void segments_dump(struct addrspace *as);
+
 #endif /* OPT_PAGING */
 #endif /* _SEGMENTS_H_ */

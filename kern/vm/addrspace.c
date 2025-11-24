@@ -50,6 +50,9 @@
 #include <synch.h>
 #include <pt.h>
 #include <vmstats.h>
+#include <coremap.h>
+#include <swapfile.h>
+
 #endif
 
 struct addrspace *as_create(void)
@@ -99,28 +102,81 @@ int as_copy(struct addrspace *old, struct addrspace **ret)
 void as_destroy(struct addrspace *as)
 {
 #if OPT_PAGING
-	/* libera lista segmenti */
+	/* 1) Rilascia tutte le risorse mappate nelle PTE:
+	 *    - frame fisici (INRAM)
+	 *    - slot di swap   (INSWAP)
+	 */
+	if (as->pt_l1 != NULL)
+	{
+		/* Proteggiamo L1/L2 durante la scansione */
+		if (as->pt_lock)
+		{
+			lock_acquire(as->pt_lock);
+		}
+
+		for (unsigned i = 0; i < as->pt_l1_entries; i++)
+		{
+			struct pte *l2 = (struct pte *)as->pt_l1[i];
+			if (l2 == NULL)
+				continue;
+
+			for (unsigned j = 0; j < PT_L2_SIZE; j++)
+			{
+				struct pte *p = &l2[j];
+				if (p->state == PTE_INRAM)
+				{
+					if (p->paddr != 0)
+					{
+						coremap_free_page(p->paddr);
+					}
+					p->paddr = 0;
+					p->state = PTE_NOTPRESENT;
+				}
+				else if (p->state == PTE_INSWAP)
+				{
+					if (p->swapid != 0)
+					{
+						swap_release_slot(p->swapid);
+					}
+					p->swapid = 0;
+					p->state = PTE_NOTPRESENT;
+				}
+				/* lasciamo intatti p->perms (non serve più) */
+			}
+		}
+
+		if (as->pt_lock)
+		{
+			lock_release(as->pt_lock);
+		}
+	}
+
+	/* 2) Libera le strutture della PT (L2 e L1) */
+	pt_destroy(as);
+
+	/* 3) Libera la lista segmenti e rilascia i vnode */
 	struct vm_segment *s = as->segs;
 	while (s)
 	{
 		struct vm_segment *n = s->next;
 		if (s->vn)
+		{
 			VOP_DECREF(s->vn);
+		}
 		kfree(s);
 		s = n;
 	}
 	as->segs = NULL;
 
-	/* libera PT 2-livelli se presente */
-	pt_destroy(as);
-
-	/* distruggi lock */
+	/* 4) Distruggi il lock della PT */
 	if (as->pt_lock)
 	{
 		lock_destroy(as->pt_lock);
 		as->pt_lock = NULL;
 	}
 #endif
+
+	/* 5) Libera la struttura addrspace */
 	kfree(as);
 }
 

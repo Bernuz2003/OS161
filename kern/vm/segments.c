@@ -110,4 +110,16 @@ int seg_find(struct addrspace *as, vaddr_t faultaddr,
     return -1;
 }
 
+void segments_dump(struct addrspace *as) {
+    kprintf("[segments] dump for as=%p\n", as);
+    for (struct vm_segment *s = as->segs; s; s = s->next) {
+        kprintf("  seg %p: vbase=0x%08lx npages=%lu end=0x%08lx back=%d file_off=%lld file_len=%lu perms=%c%c%c\n",
+            s, (unsigned long)s->vbase, (unsigned long)s->npages,
+            (unsigned long)(s->vbase + s->npages*PAGE_SIZE),
+            s->backing, (long long)s->file_off, (unsigned long)s->file_len,
+            s->perm_r?'r':'-', s->perm_w?'w':'-', s->perm_x?'x':'-');
+    }
+}
+
+
 #endif /* OPT_PAGING */

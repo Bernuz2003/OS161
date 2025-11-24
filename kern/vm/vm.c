@@ -75,11 +75,14 @@ void vm_tlbshootdown(const struct tlbshootdown *ts)
  *  - altrimenti fai swap-out; aggiorna PTE vittima -> INSWAP.
  * Ritorna 0 e *out_pa = frame riusabile; ENOMEM se non trovi vittime idonee.
  */
+/* vm.c (static) */
 static int
 evict_and_reuse_frame(struct addrspace *newas, vaddr_t newva, paddr_t *out_pa)
 {
-    const unsigned MAX_SCAN = 2048; /* bound difensivo */
+    /* Bound difensivo sul numero di candidati che proviamo */
+    const unsigned MAX_SCAN = 4096;
     unsigned scans = 0;
+
     vaddr_t newva_aligned = newva & PAGE_FRAME;
 
     while (scans++ < MAX_SCAN)
@@ -90,16 +93,20 @@ evict_and_reuse_frame(struct addrspace *newas, vaddr_t newva, paddr_t *out_pa)
             return ENOMEM; /* nessun candidato evictabile */
         }
 
-        /* Metadati coremap del candidato */
+        /* Owner e metadata del frame candidato */
         struct addrspace *oas = NULL;
         vaddr_t ova = 0;
         int pinned = 0, st = 0;
-        if (coremap_get_owner(cand, &oas, &ova, &pinned, &st) != 0 || oas == NULL)
+        if (coremap_get_owner(cand, &oas, &ova, &pinned, &st) != 0)
         {
-            continue; /* inconsistente: prova altro */
+            continue; /* entry incoerente, riprova */
+        }
+        if (oas == NULL)
+        {
+            continue; /* nessun proprietario: evita (prudenza) */
         }
 
-        /* PTE della vittima: deve puntare proprio a 'cand' */
+        /* PTE del “vecchio” proprietario */
         struct pte *opte = NULL;
         if (oas->pt_lock)
             lock_acquire(oas->pt_lock);
@@ -108,66 +115,62 @@ evict_and_reuse_frame(struct addrspace *newas, vaddr_t newva, paddr_t *out_pa)
         {
             if (oas->pt_lock)
                 lock_release(oas->pt_lock);
-            continue; /* mappa cambiata: riprova */
+            continue; /* già cambiata o non corrisponde */
         }
 
-        /* Prova "drop-in-place" (nessun I/O) se FILE-backed + RO + covered */
+        /* Che tipo di backing ha la pagina? */
         struct vm_segment *seg = NULL;
         int have_seg = (seg_find(oas, ova, &seg) == 0) && seg;
-        if (have_seg && seg->backing == SEG_BACK_FILE && !(opte->perms & PTE_PERM_W))
-        {
-            vaddr_t pageoff = (ova & PAGE_FRAME) - seg->vbase;
-            if ((size_t)pageoff < seg->file_len)
-            {
-                /* invalida eventuale TLB nel processo owner */
-                if (oas == proc_getas())
-                {
-                    (void)tlb_invalidate_vaddr(ova);
-                }
-                /* smonta la PTE della vittima */
-                opte->state = PTE_NOTPRESENT;
-                opte->paddr = 0;
-                if (oas->pt_lock)
-                    lock_release(oas->pt_lock);
 
-                /* riassegna il frame al nuovo fault */
-                coremap_set_owner(cand, newas, newva_aligned);
-                *out_pa = cand;
-                return 0;
-            }
+        /* Invalida TLB mirato se stiamo girando su quell'AS */
+        if (oas == proc_getas())
+        {
+            (void)tlb_invalidate_vaddr(ova);
         }
 
-        /* Altrimenti: swap-out della vittima */
-        uint32_t slot = 0;
-        int r = swap_out_page(cand, &slot);
-        if (r == 0)
+        if (have_seg && seg->backing == SEG_BACK_FILE && (opte->perms & PTE_PERM_W) == 0)
         {
-            /* invalida TLB mirato se owner è quello corrente */
-            if (oas == proc_getas())
+            /* --- CASO A: ro/file-backed “clean” → droppabile --- */
+            opte->state = PTE_NOTPRESENT;
+            opte->paddr = 0;
+            if (oas->pt_lock)
+                lock_release(oas->pt_lock);
+
+            /* Riusa subito il frame per il nuovo fault */
+            coremap_set_owner(cand, newas, newva_aligned);
+            *out_pa = cand;
+            return 0;
+        }
+        else
+        {
+            /* --- CASO B: anon/zero-backed o RW → swap-out --- */
+            uint32_t slot = 0;
+            int r = swap_out_page(cand, &slot);
+            if (r != 0)
             {
-                (void)tlb_invalidate_vaddr(ova);
+                /* Se lo swap è pieno o errore I/O: prova altro candidato */
+                if (oas->pt_lock)
+                    lock_release(oas->pt_lock);
+                continue;
             }
-            /* PTE vittima -> INSWAP */
-            opte->swapid = slot;
+
+            /* Marca la PTE del vecchio proprietario come “in swap” */
             opte->state = PTE_INSWAP;
+            opte->swapid = slot;
             opte->paddr = 0;
             if (oas->pt_lock)
                 lock_release(oas->pt_lock);
 
             vmstats_inc_swapfile_writes();
 
-            /* riusa il frame per (newas,newva) */
+            /* Ora il frame è liberabile/riusabile */
             coremap_set_owner(cand, newas, newva_aligned);
             *out_pa = cand;
             return 0;
         }
-
-        /* swap-out fallito: libera lock e prova altro */
-        if (oas->pt_lock)
-            lock_release(oas->pt_lock);
     }
 
-    return ENOMEM;
+    return ENOMEM; /* non siamo riusciti a trovare/evincere nessuno */
 }
 
 int vm_fault(int faulttype, vaddr_t faultaddress)
@@ -325,6 +328,15 @@ int vm_fault(int faulttype, vaddr_t faultaddress)
         struct iovec iov;
         struct uio ku;
         uio_kinit(&iov, &ku, kdst, readlen, fileoff, UIO_READ);
+
+        KASSERT(seg != NULL);
+        KASSERT(in_seg && seg->backing == SEG_BACK_FILE);
+        KASSERT(seg->vn != NULL);
+
+        /* DEBUG
+        kprintf("[vm:pfin] as=%p va=0x%08lx do_zero=%d readlen=%zu off=%lld\n", as, (unsigned long)va, do_zero_all, readlen, (long long)fileoff);
+        */
+
         int r = VOP_READ(seg->vn, &ku);
         if (r)
         {
