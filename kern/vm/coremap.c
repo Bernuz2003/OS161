@@ -35,6 +35,12 @@ static unsigned long cm_nframes = 0;
 static struct spinlock cm_lock = SPINLOCK_INITIALIZER;
 static int cm_ready = 0;
 
+/* Contatore dei frame liberi per gestire la riserva kernel */
+static volatile unsigned long cm_free_count = 0;
+
+/* Numero di pagine riservate esclusivamente al kernel (es. per page tables) */
+#define KERNEL_RESERVE_PAGES 32
+
 /* cursore round-robin sui frame fisici */
 static unsigned long rr_cursor = 0;
 
@@ -82,6 +88,9 @@ void coremap_bootstrap(void)
         cm[i].owner_vaddr = 0;
     }
 
+    /* Inizializza il contatore delle pagine libere */
+    cm_free_count = cm_nframes - fixed_frames;
+
     cm_ready = 1;
     kprintf("[PAGING] coremap: %lu frames, %lu fixed, %lu free\n",
             cm_nframes, fixed_frames, cm_nframes - fixed_frames);
@@ -123,6 +132,11 @@ coremap_alloc_npages(unsigned long npages)
                 }
                 cm[start].alloc_npages = (uint32_t)npages;
                 paddr_t pa = frame_to_pa(start);
+
+                /* Aggiorna contatore free */
+                KASSERT(cm_free_count >= npages);
+                cm_free_count -= npages;
+
                 spinlock_release(&cm_lock);
                 return pa;
             }
@@ -178,6 +192,9 @@ void coremap_free_npages(paddr_t pa, unsigned long npages)
             cm[start].alloc_npages = 0;
     }
 
+    /* Aggiorna contatore free */
+    cm_free_count += npages;
+
     spinlock_release(&cm_lock);
 }
 
@@ -222,15 +239,25 @@ void coremap_set_owner(paddr_t pa, struct addrspace *as, vaddr_t va)
 }
 
 /* Alloca 1 pagina per uso utente e annota owner (as, va) */
-paddr_t
-coremap_alloc_page_user(struct addrspace *as, vaddr_t va)
+paddr_t coremap_alloc_page_user(struct addrspace *as, vaddr_t va)
 {
+    /* 
+     * Se le pagine libere sono poche, impediamo all'utente di prenderne altre.
+     * ricicla una pagina utente esistente invece di consumare la riserva.
+     */
+    spinlock_acquire(&cm_lock);
+    if (cm_free_count <= KERNEL_RESERVE_PAGES) {
+        spinlock_release(&cm_lock);
+        return 0; /* Simula "Out of Memory" per forzare eviction */
+    }
+    spinlock_release(&cm_lock);
+
+    /* Procedi con l'allocazione standard */
     paddr_t pa = coremap_alloc_page();
     if (pa == 0)
         return 0;
 
     coremap_set_owner(pa, as, va);
-    /* Non pinned per default (rimane evictabile quando implementeremo M2) */
     return pa;
 }
 

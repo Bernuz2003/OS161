@@ -248,7 +248,7 @@ int vm_fault(int faulttype, vaddr_t faultaddress)
     /* 2) Pagina nello swap -> swap-in (con fallback eviction se no frame liberi) */
     if (pte->state == PTE_INSWAP)
     {
-        paddr_t pa = coremap_alloc_page();
+        paddr_t pa = coremap_alloc_page_user(as, va);
         if (pa == 0)
         {
             int er = evict_and_reuse_frame(as, va, &pa);
@@ -270,9 +270,6 @@ int vm_fault(int faulttype, vaddr_t faultaddress)
         pte->paddr = pa;
         pte->state = PTE_INRAM;
 
-        /* owner-tracking */
-        coremap_set_owner(pa, as, va);
-
         vmstats_inc_tlb_faults();
         vmstats_inc_pf_disk();
         vmstats_inc_pf_from_swapfile();
@@ -287,7 +284,7 @@ int vm_fault(int faulttype, vaddr_t faultaddress)
     }
 
     /* 3) Primo page-fault: FILE-backed (ELF) o ZERO-backed */
-    paddr_t pa = coremap_alloc_page();
+    paddr_t pa = coremap_alloc_page_user(as, va);
     if (pa == 0)
     {
         int er = evict_and_reuse_frame(as, va, &pa);
@@ -361,9 +358,6 @@ int vm_fault(int faulttype, vaddr_t faultaddress)
         pte->perms = perms;
     pte->paddr = pa;
     pte->state = PTE_INRAM;
-
-    /* owner-tracking */
-    coremap_set_owner(pa, as, va);
 
     vmstats_inc_tlb_faults();
     if (do_zero_all)
