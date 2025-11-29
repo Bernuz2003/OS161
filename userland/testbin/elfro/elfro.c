@@ -1,13 +1,6 @@
 /* elfro.c
  *
  * OBIETTIVO: Testare un segmento Read-Only (TEXT/RODATA) grande (2MB).
- *
- * COMPORTAMENTO ATTESO:
- * - SU CONFIG 512KB RAM: MOLTO PROBABILE CRASH (Kernel Starvation).
- * Il working set (2MB) è > RAM (512KB). Il kernel prova a caricare pagine RO. 
- * Deve scartarne altre. Se la RAM si riempie completamente di pagine utente, 
- * kmalloc() fallisce nel creare nuove Page Table entries -> Panic/Kill.
- * - SU CONFIG > 2MB RAM: SUCCESSO. Il test dovrebbe finire calcolando la checksum.
  */
 
 #include <stdio.h>
@@ -33,9 +26,8 @@ int main(void)
 
     /* * Legge un byte per pagina.
      * Poiché l'array è 2MB:
-     * - Se RAM < 2MB: Il kernel dovrà fare "eviction".
-     * Essendo pagine FILE-BACKED e READ-ONLY, il tuo kernel dovrebbe fare "Drop-in-place"
-     * (scartarle senza scrivere nello swap, ricaricandole dal file ELF se servono di nuovo).
+     * - Se RAM < 2MB - 128B: Il kernel dovrà fare "eviction".
+     * Essendo pagine FILE-BACKED e READ-ONLY, il kernel dovrebbe fare "Drop" semplice
      */
     for (unsigned long i = 0; i < ROBYTES; i += PGSZ)
     {

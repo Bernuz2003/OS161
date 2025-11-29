@@ -2,11 +2,6 @@
  *
  * OBIETTIVO: Verificare che le pagine della sezione BSS (variabili globali non inizializzate)
  * siano riempite di zeri al primo accesso (Zero-Fill-On-Demand).
- *
- * COMPORTAMENTO ATTESO:
- * - SUCCESSO: Il programma termina stampando "Readback OK".
- * - FALLIMENTO: Se stampa "BSS non zero...", la tua vm_fault non sta facendo bzero()
- * sulle pagine nuove allocate.
  */
 
 #include <stdio.h>

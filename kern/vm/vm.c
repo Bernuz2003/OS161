@@ -298,20 +298,24 @@ int vm_fault(int faulttype, vaddr_t faultaddress)
 
     if (in_seg && seg->backing == SEG_BACK_FILE)
     {
+        /* Calcola l'offset relativo all'inizio del segmento */
         vaddr_t pageoff = va - seg->vbase;
         if (pageoff < seg->file_len)
         {
+            /* CASO A: Dati presenti nel file (Code/Data) */
             size_t remaining = seg->file_len - pageoff;
             readlen = remaining > PAGE_SIZE ? PAGE_SIZE : remaining;
             fileoff = seg->file_off + (off_t)pageoff;
         }
         else
         {
+            /* CASO B: Parte BSS del segmento (dopo la fine dei dati su file) */
             do_zero_all = 1;
         }
     }
     else
     {
+        /* CASO C: Stack, Heap o Segmenti non file-backed */
         do_zero_all = 1; /* ZERO-backed */
     }
 

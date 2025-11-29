@@ -27,19 +27,20 @@ int tlb_insert_rr(vaddr_t vaddr, paddr_t paddr, int writable, int *used_free_slo
     uint32_t elo = (uint32_t)((paddr & TLBLO_PPAGE) | TLBLO_VALID |
                               (writable ? TLBLO_DIRTY : 0));
 
-    int spl = splhigh();
+    int spl = splhigh();        // Disabilita interrupt
 
     /* Cerca slot libero prima */
     for (int i = 0; i < NUM_TLB; i++)
     {
         uint32_t rhi, rlo;
-        tlb_read(&rhi, &rlo, i);
-        if ((rlo & TLBLO_VALID) == 0)
+        tlb_read(&rhi, &rlo, i);    // Legge l'entry all'indice 'i'
+
+        if ((rlo & TLBLO_VALID) == 0)   // Controlla se è invalida => vuota
         {
-            tlb_write(ehi, elo, i);
+            tlb_write(ehi, elo, i);     // Scrive la nuova entry nello slot 'i'
             if (used_free_slot)
-                *used_free_slot = 1;
-            splx(spl);
+                *used_free_slot = 1;    // usato slot libero
+            splx(spl);          // Ripristina interrupt
             return 0;
         }
     }

@@ -115,7 +115,7 @@ swap_out_page(paddr_t pa, uint32_t *slot_out)
 
     uint32_t slot;
     if (slot_out == NULL) {
-        /* Consentiamo anche uso interno senza ritorno di slot (ma serve…) */
+        /* Consentiamo anche uso interno senza ritorno di slot */
         r = swap_reserve_slot(&slot);
         if (r) return r;
     } else {

@@ -16,7 +16,7 @@ paddr_t coremap_alloc_npages(unsigned long npages);
 void    coremap_free_page(paddr_t pa);
 void    coremap_free_npages(paddr_t pa, unsigned long npages);
 
-/* >>> NUOVO: allocazione kernel già pinnata (evita ripetere mark_pinned) */
+/* allocazione kernel già pinnata (evita ripetere mark_pinned) */
 paddr_t coremap_alloc_npages_kernel(unsigned long npages);
 
 /* Owner/pin helpers già esistenti */

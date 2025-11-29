@@ -68,7 +68,7 @@ void coremap_bootstrap(void)
 
     /* Dimensione tabella e allineamento a pagina */
     size_t table_bytes = cm_nframes * sizeof(struct cm_entry);
-    size_t table_bytes_aligned = (table_bytes + PAGE_SIZE - 1) & PAGE_FRAME;
+    size_t table_bytes_aligned = (table_bytes + PAGE_SIZE - 1) & PAGE_FRAME;    // Round Up a multiplo di PAGE_SIZE
 
     /* La coremap risiede in KSEG0 a partire da firstfree */
     vaddr_t cm_vaddr = PADDR_TO_KVADDR(firstfree);
@@ -242,7 +242,6 @@ void coremap_set_owner(paddr_t pa, struct addrspace *as, vaddr_t va)
 paddr_t coremap_alloc_page_user(struct addrspace *as, vaddr_t va)
 {
     /* 
-     * Se le pagine libere sono poche, impediamo all'utente di prenderne altre.
      * ricicla una pagina utente esistente invece di consumare la riserva.
      */
     spinlock_acquire(&cm_lock);

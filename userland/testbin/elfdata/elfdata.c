@@ -1,11 +1,6 @@
 /* elfdata.c
  *
  * OBIETTIVO: Verificare il caricamento on-demand del segmento DATA (variabili inizializzate).
- *
- * COMPORTAMENTO ATTESO:
- * - SUCCESSO: Stampa i valori corretti (0xA1, 0xB2...) e termina con "write su .data OK".
- * - FALLIMENTO: Se i valori sono 0 o errati, c'è un errore in vm_fault nella gestione
- * di SEG_BACK_FILE o nel calcolo dell'offset nel file ELF.
  */
 
 #include <stdio.h>
@@ -34,7 +29,7 @@ int main(void) {
     
     /* * Verifica scrittura: il segmento .data è Read-Write (RW).
      * Non deve generare eccezioni "TLB Modify" o "ReadOnly".
-     * Se crasha qui, hai impostato i permessi sbagliati (RO invece di RW).
+     * Se crasha => permessi sbagliati (RO invece di RW).
      */
     initdata[0] ^= 0xff;
     printf("[elfdata] write su .data OK\n");
